@@ -5,7 +5,7 @@ import { PathInfo } from './path-info';
 import { ILiveDataProxy, LiveDataProxy, LiveDataProxyOptions, SubscribeFunction } from './data-proxy';
 import { getObservable } from './optional-observable';
 import type { Observable } from './optional-observable';
-import type { AceBaseBase } from './acebase-base';
+import type { AceBaseBase, AceBaseBaseSettings } from './acebase-base';
 import type { QueryOptions, StreamReadFunction, StreamWriteFunction, ValueMutation, ValueChange, IStreamLike, ReflectionType, IReflectionNodeInfo, IReflectionChildrenInfo } from './api';
 
 export type ValueEvent = 'value'|'child_added'|'child_changed'|'child_removed'|'mutated'|'mutations'
@@ -139,7 +139,8 @@ export class DataReference<T = any> {
         vars: PathVariables,
         context: any,
         pushed: boolean, // If DataReference was created by .push
-        cursor: string
+        cursor: string,
+        dbOpts: AceBaseBaseSettings,
     };
 
     /**
@@ -160,6 +161,7 @@ export class DataReference<T = any> {
             context: {},
             pushed: false,
             cursor: null,
+            dbOpts: db.options,
         };
     }
 
@@ -388,20 +390,20 @@ export class DataReference<T = any> {
      * @param callback - callback function that performs the transaction on the node's current value. It must return the new value to store (or promise with new value), undefined to cancel the transaction, or null to remove the node.
      * @returns returns a promise that resolves with the DataReference once the transaction has been processed
      */
-    async transaction<Value = T>(callback: (currentValue: DataSnapshot<Value>) => any): Promise<this> {
+    async transaction<Value = T>(callback: (currentValue: DataSnapshot<Value>) => any, onComplete?: (a: Error|null, b: boolean, c: DataSnapshot<Value>|null) => void): Promise<this> {
         if (this.isWildcardPath) {
             throw new Error(`Cannot start a transaction on wildcard path "/${this.path}"`);
         }
         if (!this[_private].db.isReady) {
             await this[_private].db.ready();
         }
-        let throwError;
+        let throwError, finalValue;
         const cb = (currentValue: any) => {
             currentValue = this[_private].db.types.deserialize(this.path, currentValue);
             const snap = new DataSnapshot(this, currentValue);
             let newValue;
             try {
-                newValue = callback(snap);
+                newValue = this[_private].dbOpts.firebaseCompat ? callback(currentValue) : callback(snap);
             }
             catch(err) {
                 // callback code threw an error
@@ -411,6 +413,7 @@ export class DataReference<T = any> {
             if (newValue instanceof Promise) {
                 return newValue
                     .then((val) => {
+                        finalValue = val;
                         return this[_private].db.types.serialize(this.path, val);
                     })
                     .catch(err => {
@@ -419,6 +422,7 @@ export class DataReference<T = any> {
                     });
             }
             else {
+                finalValue = newValue;
                 return this[_private].db.types.serialize(this.path, newValue);
             }
         };
@@ -426,8 +430,10 @@ export class DataReference<T = any> {
         this.cursor = cursor;
         if (throwError) {
             // Rethrow error from callback code
+            onComplete && onComplete(throwError, false, null);
             throw throwError;
         }
+        onComplete && onComplete(null, false, finalValue);
         return this;
     }
 
