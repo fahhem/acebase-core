@@ -33,6 +33,11 @@ export declare class AceBaseBaseSettings {
      */
     logColors: boolean;
     /**
+     * Whether to expose a more Firebase-compatible API
+     * @default true
+     */
+    firebaseCompat: boolean;
+    /**
      * @internal (for internal use)
      */
     info: string;
@@ -57,6 +62,7 @@ export declare abstract class AceBaseBase extends SimpleEventEmitter {
      */
     types: TypeMappings;
     readonly name: string;
+    readonly options: AceBaseBaseSettings;
     /**
      * @param dbname Name of the database to open or create
      */

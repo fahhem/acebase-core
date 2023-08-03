@@ -58,7 +58,6 @@ class DataReference {
      * Creates a reference to a node
      */
     constructor(db, path, vars) {
-        this.db = db;
         if (!path) {
             path = '';
         }
@@ -70,11 +69,16 @@ class DataReference {
             get path() { return path; },
             get key() { return key; },
             get callbacks() { return callbacks; },
+            db: db,
             vars: vars || {},
             context: {},
             pushed: false,
             cursor: null,
+            dbOpts: db.options,
         };
+    }
+    get db() {
+        return this[_private].db;
     }
     context(context, merge = false) {
         const currentContext = this[_private].context;
@@ -139,7 +143,7 @@ class DataReference {
         if (info.parentPath === null) {
             return null;
         }
-        return new DataReference(this.db, info.parentPath).context(this[_private].context);
+        return new DataReference(this[_private].db, info.parentPath).context(this[_private].context);
     }
     /**
      * Contains values of the variables/wildcards used in a subscription path if this reference was
@@ -157,7 +161,7 @@ class DataReference {
         childPath = typeof childPath === 'number' ? childPath : childPath.replace(/^\/|\/$/g, '');
         const currentPath = path_info_1.PathInfo.fillVariables2(this.path, this.vars);
         const targetPath = path_info_1.PathInfo.getChildPath(currentPath, childPath);
-        return new DataReference(this.db, targetPath).context(this[_private].context); //  `${this.path}/${childPath}`
+        return new DataReference(this[_private].db, targetPath).context(this[_private].context); //  `${this.path}/${childPath}`
     }
     /**
      * Sets or overwrites the stored value
@@ -176,11 +180,11 @@ class DataReference {
             if (typeof value === 'undefined') {
                 throw new TypeError(`Cannot store undefined value in "/${this.path}"`);
             }
-            if (!this.db.isReady) {
-                await this.db.ready();
+            if (!this[_private].db.isReady) {
+                await this[_private].db.ready();
             }
-            value = this.db.types.serialize(this.path, value);
-            const { cursor } = await this.db.api.set(this.path, value, { context: this[_private].context });
+            value = this[_private].db.types.serialize(this.path, value);
+            const { cursor } = await this[_private].db.api.set(this.path, value, { context: this[_private].context });
             this.cursor = cursor;
             if (typeof onComplete === 'function') {
                 try {
@@ -218,8 +222,8 @@ class DataReference {
             if (this.isWildcardPath) {
                 throw new Error(`Cannot update the value of wildcard path "/${this.path}"`);
             }
-            if (!this.db.isReady) {
-                await this.db.ready();
+            if (!this[_private].db.isReady) {
+                await this[_private].db.ready();
             }
             if (typeof updates !== 'object' || updates instanceof Array || updates instanceof ArrayBuffer || updates instanceof Date) {
                 await this.set(updates);
@@ -228,8 +232,8 @@ class DataReference {
                 console.warn(`update called on path "/${this.path}", but there is nothing to update`);
             }
             else {
-                updates = this.db.types.serialize(this.path, updates);
-                const { cursor } = await this.db.api.update(this.path, updates, { context: this[_private].context });
+                updates = this[_private].db.types.serialize(this.path, updates);
+                const { cursor } = await this[_private].db.api.update(this.path, updates, { context: this[_private].context });
                 this.cursor = cursor;
             }
             if (typeof onComplete === 'function') {
@@ -263,20 +267,20 @@ class DataReference {
      * @param callback - callback function that performs the transaction on the node's current value. It must return the new value to store (or promise with new value), undefined to cancel the transaction, or null to remove the node.
      * @returns returns a promise that resolves with the DataReference once the transaction has been processed
      */
-    async transaction(callback) {
+    async transaction(callback, onComplete) {
         if (this.isWildcardPath) {
             throw new Error(`Cannot start a transaction on wildcard path "/${this.path}"`);
         }
-        if (!this.db.isReady) {
-            await this.db.ready();
+        if (!this[_private].db.isReady) {
+            await this[_private].db.ready();
         }
-        let throwError;
+        let throwError, finalValue;
         const cb = (currentValue) => {
-            currentValue = this.db.types.deserialize(this.path, currentValue);
+            currentValue = this[_private].db.types.deserialize(this.path, currentValue);
             const snap = new data_snapshot_1.DataSnapshot(this, currentValue);
             let newValue;
             try {
-                newValue = callback(snap);
+                newValue = this[_private].dbOpts.firebaseCompat ? callback(currentValue) : callback(snap);
             }
             catch (err) {
                 // callback code threw an error
@@ -286,7 +290,8 @@ class DataReference {
             if (newValue instanceof Promise) {
                 return newValue
                     .then((val) => {
-                    return this.db.types.serialize(this.path, val);
+                    finalValue = val;
+                    return this[_private].db.types.serialize(this.path, val);
                 })
                     .catch(err => {
                     throwError = err; // Remember error
@@ -294,15 +299,18 @@ class DataReference {
                 });
             }
             else {
-                return this.db.types.serialize(this.path, newValue);
+                finalValue = newValue;
+                return this[_private].db.types.serialize(this.path, newValue);
             }
         };
-        const { cursor } = await this.db.api.transaction(this.path, cb, { context: this[_private].context });
+        const { cursor } = await this[_private].db.api.transaction(this.path, cb, { context: this[_private].context });
         this.cursor = cursor;
         if (throwError) {
             // Rethrow error from callback code
+            onComplete && onComplete(throwError, false, null);
             throw throwError;
         }
+        onComplete && onComplete(null, false, finalValue);
         return this;
     }
     on(event, callback, cancelCallback) {
@@ -320,10 +328,10 @@ class DataReference {
             ourCallback: (err, path, newValue, oldValue, eventContext) => {
                 if (err) {
                     // TODO: Investigate if this ever happens?
-                    this.db.debug.error(`Error getting data for event ${event} on path "${path}"`, err);
+                    this[_private].db.debug.error(`Error getting data for event ${event} on path "${path}"`, err);
                     return;
                 }
-                const ref = this.db.ref(path);
+                const ref = this[_private].db.ref(path);
                 ref[_private].vars = path_info_1.PathInfo.extractVariables(this.path, path);
                 let callbackObject;
                 if (event.startsWith('notify_')) {
@@ -332,8 +340,8 @@ class DataReference {
                 }
                 else {
                     const values = {
-                        previous: this.db.types.deserialize(path, oldValue),
-                        current: this.db.types.deserialize(path, newValue),
+                        previous: this[_private].db.types.deserialize(path, oldValue),
+                        current: this[_private].db.types.deserialize(path, newValue),
                     };
                     if (event === 'child_removed') {
                         callbackObject = new data_snapshot_1.DataSnapshot(ref, values.previous, true, values.previous, eventContext);
@@ -377,16 +385,16 @@ class DataReference {
                 // Cancel subscription
                 const callbacks = this[_private].callbacks;
                 callbacks.splice(callbacks.indexOf(cb), 1);
-                this.db.api.unsubscribe(this.path, event, cb.ourCallback);
+                this[_private].db.api.unsubscribe(this.path, event, cb.ourCallback);
                 // Call cancelCallbacks
-                this.db.debug.error(`Subscription "${event}" on path "/${this.path}" canceled because of an error: ${err.message}`);
+                this[_private].db.debug.error(`Subscription "${event}" on path "/${this.path}" canceled because of an error: ${err.message}`);
                 eventPublisher.cancel(err.message);
             };
-            const authorized = this.db.api.subscribe(this.path, event, cb.ourCallback, { newOnly: advancedOptions.newOnly, cancelCallback: cancelSubscription, syncFallback: advancedOptions.syncFallback });
+            const authorized = this[_private].db.api.subscribe(this.path, event, cb.ourCallback, { newOnly: advancedOptions.newOnly, cancelCallback: cancelSubscription, syncFallback: advancedOptions.syncFallback });
             const allSubscriptionsStoppedCallback = () => {
                 const callbacks = this[_private].callbacks;
                 callbacks.splice(callbacks.indexOf(cb), 1);
-                return this.db.api.unsubscribe(this.path, event, cb.ourCallback);
+                return this[_private].db.api.unsubscribe(this.path, event, cb.ourCallback);
             };
             if (authorized instanceof Promise) {
                 // Web API now returns a promise that resolves if the request is allowed
@@ -428,7 +436,7 @@ class DataReference {
                     const step = 100, limit = step;
                     let skip = 0;
                     const more = async () => {
-                        const children = await this.db.api.reflect(this.path, 'children', { limit, skip });
+                        const children = await this[_private].db.api.reflect(this.path, 'children', { limit, skip });
                         children.list.forEach(child => {
                             const childRef = this.child(child.key);
                             eventPublisher.publish(childRef);
@@ -443,11 +451,11 @@ class DataReference {
                 }
             }
         };
-        if (this.db.isReady) {
+        if (this[_private].db.isReady) {
             subscribe();
         }
         else {
-            this.db.ready(subscribe);
+            this[_private].db.ready(subscribe);
         }
         return eventStream;
     }
@@ -455,7 +463,7 @@ class DataReference {
         const subscriptions = this[_private].callbacks;
         const stopSubs = subscriptions.filter(sub => (!event || sub.event === event) && (!callback || sub.userCallback === callback));
         if (stopSubs.length === 0) {
-            this.db.debug.warn(`Can't find event subscriptions to stop (path: "${this.path}", event: ${event || '(any)'}, callback: ${callback})`);
+            this[_private].db.debug.warn(`Can't find event subscriptions to stop (path: "${this.path}", event: ${event || '(any)'}, callback: ${callback})`);
         }
         stopSubs.forEach(sub => {
             sub.stream.stop();
@@ -463,8 +471,8 @@ class DataReference {
         return this;
     }
     get(optionsOrCallback, callback) {
-        if (!this.db.isReady) {
-            const promise = this.db.ready().then(() => this.get(optionsOrCallback, callback));
+        if (!this[_private].db.isReady) {
+            const promise = this[_private].db.ready().then(() => this.get(optionsOrCallback, callback));
             return typeof optionsOrCallback !== 'function' && typeof callback !== 'function' ? promise : undefined; // only return promise if no callback is used
         }
         callback =
@@ -481,7 +489,7 @@ class DataReference {
             return Promise.reject(error);
         }
         const options = new DataRetrievalOptions(typeof optionsOrCallback === 'object' ? optionsOrCallback : { cache_mode: 'allow' });
-        const promise = this.db.api.get(this.path, options).then(result => {
+        const promise = this[_private].db.api.get(this.path, options).then(result => {
             var _a;
             const isNewApiResult = ('context' in result && 'value' in result);
             if (!isNewApiResult) {
@@ -489,7 +497,7 @@ class DataReference {
                 console.warn('AceBase api.get method returned an old response value. Update your acebase or acebase-client package');
                 result = { value: result, context: {} };
             }
-            const value = this.db.types.deserialize(this.path, result.value);
+            const value = this[_private].db.types.deserialize(this.path, result.value);
             const snapshot = new data_snapshot_1.DataSnapshot(this, value, undefined, undefined, result.context);
             if ((_a = result.context) === null || _a === void 0 ? void 0 : _a.acebase_cursor) {
                 this.cursor = result.context.acebase_cursor;
@@ -568,10 +576,10 @@ class DataReference {
         if (this.isWildcardPath) {
             throw new Error(`Cannot check wildcard path "/${this.path}" existence`);
         }
-        if (!this.db.isReady) {
-            await this.db.ready();
+        if (!this[_private].db.isReady) {
+            await this[_private].db.ready();
         }
-        return this.db.api.exists(this.path);
+        return this[_private].db.api.exists(this.path);
     }
     get isWildcardPath() {
         return this.path.indexOf('*') >= 0 || this.path.indexOf('$') >= 0;
@@ -593,20 +601,20 @@ class DataReference {
         if (this.isWildcardPath) {
             throw new Error(`Cannot reflect on wildcard path "/${this.path}"`);
         }
-        if (!this.db.isReady) {
-            await this.db.ready();
+        if (!this[_private].db.isReady) {
+            await this[_private].db.ready();
         }
-        return this.db.api.reflect(this.path, type, args);
+        return this[_private].db.api.reflect(this.path, type, args);
     }
     async export(write, options = { format: 'json', type_safe: true }) {
         if (this.isWildcardPath) {
             throw new Error(`Cannot export wildcard path "/${this.path}"`);
         }
-        if (!this.db.isReady) {
-            await this.db.ready();
+        if (!this[_private].db.isReady) {
+            await this[_private].db.ready();
         }
         const writeFn = typeof write === 'function' ? write : write.write.bind(write);
-        return this.db.api.export(this.path, writeFn, options);
+        return this[_private].db.api.export(this.path, writeFn, options);
     }
     /**
      * Imports the value of this node and all children
@@ -618,15 +626,15 @@ class DataReference {
         if (this.isWildcardPath) {
             throw new Error(`Cannot import to wildcard path "/${this.path}"`);
         }
-        if (!this.db.isReady) {
-            await this.db.ready();
+        if (!this[_private].db.isReady) {
+            await this[_private].db.ready();
         }
-        return this.db.api.import(this.path, read, options);
+        return this[_private].db.api.import(this.path, read, options);
     }
     proxy(options) {
         const isOptionsArg = typeof options === 'object' && (typeof options.cursor !== 'undefined' || typeof options.defaultValue !== 'undefined');
         if (typeof options !== 'undefined' && !isOptionsArg) {
-            this.db.debug.warn('Warning: live data proxy is being initialized with a deprecated method signature. Use ref.proxy(options) instead of ref.proxy(defaultValue)');
+            this[_private].db.debug.warn('Warning: live data proxy is being initialized with a deprecated method signature. Use ref.proxy(options) instead of ref.proxy(defaultValue)');
             options = { defaultValue: options };
         }
         return data_proxy_1.LiveDataProxy.create(this, options);
@@ -732,12 +740,12 @@ class DataReference {
     async getMutations(cursorOrDate) {
         const cursor = typeof cursorOrDate === 'string' ? cursorOrDate : undefined;
         const timestamp = cursorOrDate === null || typeof cursorOrDate === 'undefined' ? 0 : cursorOrDate instanceof Date ? cursorOrDate.getTime() : undefined;
-        return this.db.api.getMutations({ path: this.path, cursor, timestamp });
+        return this[_private].db.api.getMutations({ path: this.path, cursor, timestamp });
     }
     async getChanges(cursorOrDate) {
         const cursor = typeof cursorOrDate === 'string' ? cursorOrDate : undefined;
         const timestamp = cursorOrDate === null || typeof cursorOrDate === 'undefined' ? 0 : cursorOrDate instanceof Date ? cursorOrDate.getTime() : undefined;
-        return this.db.api.getChanges({ path: this.path, cursor, timestamp });
+        return this[_private].db.api.getChanges({ path: this.path, cursor, timestamp });
     }
 }
 exports.DataReference = DataReference;

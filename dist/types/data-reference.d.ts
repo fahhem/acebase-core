@@ -81,12 +81,12 @@ type PathVariables = {
 type EventCallback<T = DataSnapshot | DataReference> = ((snapshotOrReference: T) => void);
 declare const _private: unique symbol;
 export declare class DataReference<T = any> {
-    readonly db: AceBaseBase;
     private [_private];
     /**
      * Creates a reference to a node
      */
     constructor(db: AceBaseBase, path: string, vars?: PathVariables);
+    get db(): AceBaseBase;
     /**
      * Adds contextual info for database updates through this reference.
      * This allows you to identify the event source (and/or reason) of
@@ -186,7 +186,7 @@ export declare class DataReference<T = any> {
      * @param callback - callback function that performs the transaction on the node's current value. It must return the new value to store (or promise with new value), undefined to cancel the transaction, or null to remove the node.
      * @returns returns a promise that resolves with the DataReference once the transaction has been processed
      */
-    transaction<Value = T>(callback: (currentValue: DataSnapshot<Value>) => any): Promise<this>;
+    transaction<Value = T>(callback: (currentValue: DataSnapshot<Value>) => any, onComplete?: (a: Error | null, b: boolean, c: DataSnapshot<Value> | null) => void): Promise<this>;
     /**
      * Subscribes to an event. Supported events are "value", "child_added", "child_changed", "child_removed",
      * which will run the callback with a snapshot of the data. If you only wish to receive notifications of the

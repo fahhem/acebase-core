@@ -78,7 +78,7 @@ var ColorStyle;
     ColorStyle["bgCyan"] = "bgCyan";
     ColorStyle["bgWhite"] = "bgWhite";
     ColorStyle["bgGrey"] = "bgGrey";
-})(ColorStyle = exports.ColorStyle || (exports.ColorStyle = {}));
+})(ColorStyle || (exports.ColorStyle = ColorStyle = {}));
 function ColorsSupported() {
     // Checks for basic color support
     if (typeof process_1.default === 'undefined' || !process_1.default.stdout || !process_1.default.env || !process_1.default.platform || process_1.default.platform === 'browser') {
